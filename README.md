@@ -18,7 +18,6 @@
 ## Installation
 
 The required packages are listed in `requirements.txt`:
-- pandas
 - openpyxl
 - pywin32
 

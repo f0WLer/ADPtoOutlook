@@ -8,10 +8,10 @@ Author: Company IT
 Date: December 2025
 """
 
-import pandas as pd
+import openpyxl
 import win32com.client
 from datetime import datetime, timedelta, time
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict, Any
 import win32timezone
 import argparse
 import sys
@@ -53,8 +53,8 @@ EVENT_CATEGORY = "Time Off"
 class TimeOffRequest:
     """Represents a single time-off request from the Excel file."""
     
-    def __init__(self, row: pd.Series, row_index: int):
-        """Initialize a TimeOffRequest from a pandas Series row."""
+    def __init__(self, row: Dict[str, Any], row_index: int):
+        """Initialize a TimeOffRequest from a dictionary row."""
         self.row_index = row_index
         self.name = row.get(EXCEL_COLUMNS['NAME'], 'Unknown')
         self.status = str(row.get(EXCEL_COLUMNS['STATUS'], '')).strip()
@@ -68,7 +68,7 @@ class TimeOffRequest:
         self.start_time = parse_time(row.get(EXCEL_COLUMNS['START_TIME'], ''))
         
         # Validate and normalize duration
-        if pd.isna(self.duration) or self.duration <= 0:
+        if self.duration is None or (isinstance(self.duration, (int, float)) and self.duration <= 0):
             self.duration = 1
     
     def is_approved(self) -> bool:
@@ -127,7 +127,7 @@ def parse_date(date_str) -> Optional[datetime]:
     Returns:
         datetime object or None if parsing fails
     """
-    if pd.isna(date_str):
+    if date_str is None or date_str == '':
         return None
     
     for fmt in DATE_FORMATS:
@@ -149,7 +149,7 @@ def parse_time(time_str) -> Optional[time]:
     Returns:
         time object or None if parsing fails
     """
-    if pd.isna(time_str):
+    if time_str is None or time_str == '':
         return None
     
     time_str = str(time_str).strip()
@@ -195,7 +195,7 @@ def parse_date_range_args(start_str: str, end_str: str) -> Tuple[datetime, datet
 
 def load_time_off_requests(excel_file: str) -> List[TimeOffRequest]:
     """
-    Load time-off requests from Excel file.
+    Load time-off requests from Excel file using openpyxl.
     
     Args:
         excel_file: Path to the Excel file
@@ -204,13 +204,31 @@ def load_time_off_requests(excel_file: str) -> List[TimeOffRequest]:
         List of TimeOffRequest objects
     """
     print(f"Reading {excel_file}...")
-    df = pd.read_excel(excel_file)
     
+    workbook = openpyxl.load_workbook(excel_file, data_only=True)
+    sheet = workbook.active
+    
+    if sheet is None:
+        raise ValueError("Excel file has no active sheet")
+    
+    # Get header row (first row)
+    headers = []
+    for cell in sheet[1]:
+        headers.append(cell.value)
+    
+    # Read data rows
     requests = []
-    for idx, (index, row) in enumerate(df.iterrows()):
-        request = TimeOffRequest(row, idx)
+    for idx, row in enumerate(sheet.iter_rows(min_row=2, values_only=True)):
+        # Convert row to dictionary
+        row_dict = {}
+        for col_idx, value in enumerate(row):
+            if col_idx < len(headers):
+                row_dict[headers[col_idx]] = value
+        
+        request = TimeOffRequest(row_dict, idx)
         requests.append(request)
     
+    workbook.close()
     return requests
 
 

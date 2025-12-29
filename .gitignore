@@ -2,7 +2,8 @@
 .venv/
 
 # PyInstaller build folders
-dist/
+build/
+dist/*.exe
 TimeOffCalendar_Distribution/
 
 # Compiled files
