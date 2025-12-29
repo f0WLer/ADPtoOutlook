@@ -918,8 +918,8 @@ Examples:
     parser.add_argument(
         'excel_file',
         nargs='?',
-        default='example.xlsx',
-        help='Path to the Excel file (default: example.xlsx)'
+        default='timeoff.xlsx',
+        help='Path to the Excel file (default: timeoff.xlsx)'
     )
     
     parser.add_argument(
