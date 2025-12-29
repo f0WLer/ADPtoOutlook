@@ -398,6 +398,48 @@ def clear_calendar(calendar_name: str) -> None:
 # EVENT CREATION
 # ============================================================================
 
+def check_duplicate_event(calendar_folder, subject: str, start: datetime, end: datetime) -> bool:
+    """
+    Check if an event with the same subject, start, and end time already exists.
+    
+    Args:
+        calendar_folder: Calendar folder to search
+        subject: Event subject to match
+        start: Event start datetime to match
+        end: Event end datetime to match
+        
+    Returns:
+        True if duplicate exists, False otherwise
+    """
+    try:
+        items = calendar_folder.Items
+        items.IncludeRecurrences = False
+        items.Sort("[Start]")
+        
+        # Filter items around the target date for efficiency
+        filter_str = f"[Start] >= '{(start - timedelta(days=1)).strftime('%m/%d/%Y')}' AND [Start] <= '{(end + timedelta(days=1)).strftime('%m/%d/%Y')}'"
+        filtered_items = items.Restrict(filter_str)
+        
+        for item in filtered_items:
+            # Match subject and times (with small tolerance for time comparison)
+            if item.Subject == subject:
+                # For all-day events
+                if hasattr(item, 'AllDayEvent') and item.AllDayEvent:
+                    if item.Start.date() == start.date():
+                        return True
+                # For timed events - compare with 1-minute tolerance
+                else:
+                    time_diff_start = abs((item.Start - start).total_seconds())
+                    time_diff_end = abs((item.End - end).total_seconds())
+                    if time_diff_start < 60 and time_diff_end < 60:
+                        return True
+    except Exception as e:
+        # If there's an error checking, proceed with creation (fail-safe)
+        pass
+    
+    return False
+
+
 def create_event_title(request: TimeOffRequest, config: EventConfig) -> str:
     """
     Create event title based on configuration.
@@ -497,6 +539,13 @@ def create_all_day_event(
         True if event was created successfully, False otherwise
     """
     try:
+        # Check for duplicate
+        subject = create_event_title(request, config)
+        end_date = current_date + timedelta(days=1)
+        if check_duplicate_event(calendar_folder, subject, current_date, end_date):
+            print(f"Skipped (duplicate): {request.name} - {current_date.strftime('%m/%d/%Y')} (All Day)")
+            return False
+        
         appointment = calendar_folder.Items.Add(OUTLOOK_APPOINTMENT_ITEM)
         appointment.Subject = create_event_title(request, config)
         appointment.Start = current_date
@@ -541,17 +590,21 @@ def create_partial_day_event(
         return False
     
     try:
-        appointment = calendar_folder.Items.Add(OUTLOOK_APPOINTMENT_ITEM)
-        appointment.AllDayEvent = False
-        
+        # Calculate event times for duplicate check
         start_datetime = datetime.combine(current_date.date(), request.start_time)
-        duration_hours = request.duration * 24  # Convert days to hours
+        duration_hours = request.duration * 24
         end_datetime = start_datetime + timedelta(hours=duration_hours)
-        
-        # Adjust for UTC offset
         start_datetime_utc = adjust_time_for_utc(start_datetime)
         end_datetime_utc = adjust_time_for_utc(end_datetime)
         
+        # Check for duplicate
+        subject = create_event_title(request, config)
+        if check_duplicate_event(calendar_folder, subject, start_datetime_utc, end_datetime_utc):
+            print(f"Skipped (duplicate): {request.name} - {start_datetime.strftime('%m/%d/%Y %I:%M %p')} ({duration_hours:.1f} hrs)")
+            return False
+        
+        appointment = calendar_folder.Items.Add(OUTLOOK_APPOINTMENT_ITEM)
+        appointment.AllDayEvent = False
         appointment.Start = start_datetime_utc
         appointment.End = end_datetime_utc
         configure_appointment_base(appointment, request, config, outlook)
@@ -596,16 +649,20 @@ def create_full_day_event(
         return False
     
     try:
-        appointment = calendar_folder.Items.Add(OUTLOOK_APPOINTMENT_ITEM)
-        appointment.AllDayEvent = False
-        
+        # Calculate event times for duplicate check
         work_start = datetime.combine(current_date.date(), request.start_time)
         work_end = work_start + timedelta(hours=STANDARD_WORK_HOURS)
-        
-        # Adjust for UTC offset
         work_start_utc = adjust_time_for_utc(work_start)
         work_end_utc = adjust_time_for_utc(work_end)
         
+        # Check for duplicate
+        subject = create_event_title(request, config)
+        if check_duplicate_event(calendar_folder, subject, work_start_utc, work_end_utc):
+            print(f"Skipped (duplicate): {request.name} - {work_start.strftime('%m/%d/%Y %I:%M %p')}")
+            return False
+        
+        appointment = calendar_folder.Items.Add(OUTLOOK_APPOINTMENT_ITEM)
+        appointment.AllDayEvent = False
         appointment.Start = work_start_utc
         appointment.End = work_end_utc
         configure_appointment_base(appointment, request, config, outlook)
@@ -656,18 +713,17 @@ def create_events_for_request(
                 events_created += 1
         return events_created
     
-    # Timed events
+    # Partial day event (single event only)
+    if request.is_partial_day():
+        if create_partial_day_event(calendar_folder, request, request.start_date, config, outlook):
+            events_created += 1
+        return events_created
+    
+    # Full work day events (may span multiple days)
     for day_offset in range(num_days):
         current_date = request.start_date + timedelta(days=day_offset)
-        
-        # Single partial day
-        if request.is_partial_day() and num_days == 1:
-            if create_partial_day_event(calendar_folder, request, current_date, config, outlook):
-                events_created += 1
-        # Full work days
-        else:
-            if create_full_day_event(calendar_folder, request, current_date, day_offset, config, outlook):
-                events_created += 1
+        if create_full_day_event(calendar_folder, request, current_date, day_offset, config, outlook):
+            events_created += 1
     
     return events_created
 
@@ -719,15 +775,22 @@ def import_time_off_to_outlook(
     # Create events
     events_created = 0
     events_skipped = len(all_requests) - len(approved_requests)
+    duplicates_found = 0
     
     for request in approved_requests:
         created = create_events_for_request(target_calendar, request, config, outlook_conn.outlook)
         events_created += created
+        # Count duplicates (events that should have been created but weren't)
+        if request.is_valid():
+            expected_events = request.get_num_days()
+            duplicates_found += (expected_events - created)
     
     # Summary
     print(f"\n✓ Complete!")
     print(f"  Events created: {events_created}")
-    print(f"  Events skipped: {events_skipped}")
+    print(f"  Events skipped (not approved/invalid): {events_skipped}")
+    if duplicates_found > 0:
+        print(f"  Duplicates skipped: {duplicates_found}")
     print(f"\nCalendar '{calendar_name}' has been created/updated in Outlook.")
     print("You can now view all employee time off in this calendar.")
 
@@ -770,9 +833,10 @@ Examples:
   %(prog)s example.xlsx
   %(prog)s example.xlsx --clear
   %(prog)s example.xlsx --verbose
+  %(prog)s example.xlsx --name "Staff Vacation Calendar"
   %(prog)s example.xlsx --clear --verbose
   %(prog)s example.xlsx --range 02-01-2026 02-14-2026
-  %(prog)s example.xlsx --clear --verbose --range 02-01-2026 02-28-2026
+  %(prog)s example.xlsx --clear --verbose --range 02-01-2026 02-28-2026 --name "Q1 Time Off"
         ''')
     
     parser.add_argument(
@@ -801,6 +865,13 @@ Examples:
         help='Only import events within date range (format: MM-DD-YYYY MM-DD-YYYY)'
     )
     
+    parser.add_argument(
+        '--name',
+        type=str,
+        default='Employee Time Off',
+        help='Base name for the calendar (default: "Employee Time Off")'
+    )
+    
     return parser.parse_args()
 
 
@@ -824,6 +895,7 @@ def main():
     try:
         import_time_off_to_outlook(
             excel_file=args.excel_file,
+            calendar_base_name=args.name,
             verbose_titles=args.verbose,
             date_range=date_range,
             clear_existing=args.clear

@@ -3,7 +3,8 @@
 - Creates a dedicated "Employee Time Off" calendar in Outlook (with date range in name)
 - Imports only approved time off requests
 - Supports all-day, partial-day, and full-day events
-- CLI options for clearing calendar, verbose titles, and date range filtering
+- Automatic duplicate detection prevents re-importing existing events
+- CLI options for clearing calendar, verbose titles, date range filtering, and custom calendar names
 - Shows duration, reason, and policy information
 - Easy to view all employee time off at a glance
 
@@ -35,22 +36,31 @@ python excel_to_outlook.py example.xlsx --clear
 # Verbose event titles (include reason)
 python excel_to_outlook.py example.xlsx --verbose
 
+# Custom calendar name
+python excel_to_outlook.py example.xlsx --name "Staff Vacation Calendar"
+
 # Import only a date range
 python excel_to_outlook.py example.xlsx --range 02-01-2026 02-14-2026
 
 # Combine options
-python excel_to_outlook.py example.xlsx --clear --verbose --range 01-01-2026 12-31-2026
+python excel_to_outlook.py example.xlsx --clear --verbose --range 01-01-2026 12-31-2026 --name "Q1 Time Off"
 ```
+
+**Available Options:**
+- `--clear`: Delete all events from the calendar before importing
+- `--verbose`: Include reason code in event titles (e.g., "John Doe - PTO")
+- `--name "Calendar Name"`: Specify a custom base name for the calendar (default: "Employee Time Off")
+- `--range START END`: Only import events within date range (format: MM-DD-YYYY MM-DD-YYYY)
 
 ### What the Program Does
 
 1. Loads the Excel file and parses all requests
 2. Filters for approved, valid, and in-range requests
-3. Generates a calendar name based on the date range
+3. Generates a calendar name based on the date range (or uses custom name if specified)
 4. (Optional) Clears the calendar if `--clear` is used
 5. Connects to Outlook and creates/fetches the calendar
-6. Creates events for each approved request
-7. Prints a summary (events created/skipped)
+6. Creates events for each approved request (skips duplicates automatically)
+7. Prints a summary (events created/skipped/duplicates)
 8. User opens Outlook to view the new calendar
 
 ### Excel File Format
