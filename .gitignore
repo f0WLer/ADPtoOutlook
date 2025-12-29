@@ -1,0 +1,23 @@
+# Python virtual environment
+.venv/
+
+# PyInstaller build folders
+dist/
+TimeOffCalendar_Distribution/
+
+# Compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE/editor files
+.vscode/
+*.swp
+
+# Excel test files
+timeoff.xlsx
+
+
+# Developer notes (not tracked in repo)
+docs/DEVNOTES.md
