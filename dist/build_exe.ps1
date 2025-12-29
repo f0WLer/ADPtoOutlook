@@ -4,23 +4,12 @@ Write-Host "TimeOffCalendar - Build Script" -ForegroundColor Green
 Write-Host "================================" -ForegroundColor Green
 Write-Host ""
 
-# Detect if running from root or build directory based on current location
-$currentDir = Get-Location
-$currentDirName = Split-Path -Leaf $currentDir
+# Always run from root directory
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$rootDir = Split-Path -Parent $scriptDir
+Set-Location $rootDir
 
-# Set paths based on where we are running from
-if ($currentDirName -eq "build") {
-    # Running from build directory
-    $srcPath = "..\src\excel_to_outlook.py"
-    $readmePath = "..\README.md"
-} else {
-    # Running from root directory
-    $srcPath = "src\excel_to_outlook.py"
-    $readmePath = "README.md"
-}
-
-Write-Host "Running from: $currentDir" -ForegroundColor Cyan
-Write-Host "Source file: $srcPath" -ForegroundColor Cyan
+Write-Host "Running from: $rootDir" -ForegroundColor Cyan
 Write-Host ""
 
 # Check if PyInstaller is installed
@@ -30,17 +19,14 @@ if (-not $pyInstallerCheck) {
     Write-Host "PyInstaller not found. Installing version 5.13.2..." -ForegroundColor Yellow
     python -m pip install pyinstaller==5.13.2
 } else {
-    Write-Host "PyInstaller found! Installing version 5.13.2 (stable with pandas)..." -ForegroundColor Yellow
+    Write-Host "PyInstaller found! Installing version 5.13.2..." -ForegroundColor Yellow
     python -m pip install pyinstaller==5.13.2
 }
 
-# Clean previous builds (only PyInstaller temp files, not this build/ directory)
+# Clean previous builds (but NOT the dist folder or this script)
 Write-Host "`nCleaning previous builds..." -ForegroundColor Cyan
-if ($currentDirName -ne "build") {
-    # Running from root, safe to delete build folder
-    if (Test-Path "build") { Remove-Item -Recurse -Force "build" }
-}
-if (Test-Path "dist") { Remove-Item -Recurse -Force "dist" }
+if (Test-Path "build") { Remove-Item -Recurse -Force "build" }
+if (Test-Path "dist\TimeOffCalendar.exe") { Remove-Item -Force "dist\TimeOffCalendar.exe" }
 if (Test-Path "*.spec") { Remove-Item -Force "*.spec" }
 
 # Build the executable
@@ -51,38 +37,26 @@ pyinstaller --onefile `
     --console `
     --name "TimeOffCalendar" `
     --icon NONE `
-    $srcPath
+    --distpath dist `
+    src\excel_to_outlook.py
 
 # Check if build was successful
 if (Test-Path "dist\TimeOffCalendar.exe") {
     Write-Host "`nBuild successful!" -ForegroundColor Green
     
-    # Create distribution folder
-    $distFolder = "TimeOffCalendar_Distribution"
-    Write-Host "`nCreating distribution package..." -ForegroundColor Cyan
-    New-Item -ItemType Directory -Force -Path $distFolder | Out-Null
-    
-    # Copy files
-    Copy-Item "dist\TimeOffCalendar.exe" "$distFolder\"
-    Copy-Item "$readmePath" "$distFolder\" -ErrorAction SilentlyContinue
-    
     # Get file size
     $exeSize = (Get-Item "dist\TimeOffCalendar.exe").Length / 1MB
     
     Write-Host "`n================================" -ForegroundColor Green
-    Write-Host "Distribution package ready!" -ForegroundColor Green
+    Write-Host "Build complete!" -ForegroundColor Green
     Write-Host "================================" -ForegroundColor Green
-    Write-Host "Location: $distFolder\" -ForegroundColor Yellow
+    Write-Host "Location: dist\TimeOffCalendar.exe" -ForegroundColor Yellow
     Write-Host "Executable size: $([math]::Round($exeSize, 2)) MB" -ForegroundColor Yellow
-    Write-Host "`nYou can now distribute the $distFolder folder to users." -ForegroundColor Cyan
     
-    # Clean up PyInstaller build artifacts
+    # Clean up PyInstaller build artifacts (but NOT dist folder)
     Write-Host "`nCleaning up build artifacts..." -ForegroundColor Cyan
-    # Only delete the 'build' folder if we're in the build directory (PyInstaller temp files)
-    if ($currentDirName -eq "build") {
-        Remove-Item -Recurse -Force "build" -ErrorAction SilentlyContinue
-    }
-    Remove-Item -Force "*.spec" -ErrorAction SilentlyContinue
+    if (Test-Path "build") { Remove-Item -Recurse -Force "build" }
+    if (Test-Path "*.spec") { Remove-Item -Force "*.spec" }
     
 } else {
     Write-Host "`nX Build failed!" -ForegroundColor Red

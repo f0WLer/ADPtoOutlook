@@ -5,6 +5,7 @@
 build/
 dist/*.exe
 TimeOffCalendar_Distribution/
+TimeOffCalendar.spec
 
 # Compiled files
 __pycache__/
@@ -18,7 +19,6 @@ __pycache__/
 
 # Excel test files
 timeoff.xlsx
-
 
 # Developer notes (not tracked in repo)
 docs/DEVNOTES.md
