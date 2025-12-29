@@ -1,5 +1,3 @@
-<!-- MOVED TO docs/README.md -->
-
 ## Features
 
 - Creates a dedicated "Employee Time Off" calendar in Outlook (with date range in name)
@@ -29,19 +27,19 @@ The required packages are listed in `requirements.txt`:
 
 ```powershell
 # Basic usage
-python excel_to_outlook.py timeoff.xlsx
+python excel_to_outlook.py example.xlsx
 
 # Clear calendar before import
-python excel_to_outlook.py timeoff.xlsx --clear
+python excel_to_outlook.py example.xlsx --clear
 
 # Verbose event titles (include reason)
-python excel_to_outlook.py timeoff.xlsx --verbose
+python excel_to_outlook.py example.xlsx --verbose
 
 # Import only a date range
-python excel_to_outlook.py timeoff.xlsx --range 02-01-2026 02-14-2026
+python excel_to_outlook.py example.xlsx --range 02-01-2026 02-14-2026
 
 # Combine options
-python excel_to_outlook.py timeoff.xlsx --clear --verbose --range 01-01-2026 12-31-2026
+python excel_to_outlook.py example.xlsx --clear --verbose --range 01-01-2026 12-31-2026
 ```
 
 ### What the Program Does
@@ -64,14 +62,3 @@ The script expects the following columns:
 - REQUEST STATUS: Status (only "Approved" requests are imported)
 - REASON CODE: Type of time off (vacation, sick, etc.)
 - POLICY NAME: Time off policy
-
-## Customization
-
-- Change the calendar name (default: "Employee Time Off")
-- Filter by different status values
-- Change how events are displayed
-- Add custom categories or colors
-
-## Support
-
-Contact your IT administrator for assistance or see DEVNOTES.md for developer documentation.

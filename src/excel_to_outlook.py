@@ -767,19 +767,19 @@ def parse_arguments():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-  %(prog)s timeoff.xlsx
-  %(prog)s timeoff.xlsx --clear
-  %(prog)s timeoff.xlsx --verbose
-  %(prog)s timeoff.xlsx --clear --verbose
-  %(prog)s timeoff.xlsx --range 02-01-2026 02-14-2026
-  %(prog)s timeoff.xlsx --clear --verbose --range 02-01-2026 02-28-2026
+  %(prog)s example.xlsx
+  %(prog)s example.xlsx --clear
+  %(prog)s example.xlsx --verbose
+  %(prog)s example.xlsx --clear --verbose
+  %(prog)s example.xlsx --range 02-01-2026 02-14-2026
+  %(prog)s example.xlsx --clear --verbose --range 02-01-2026 02-28-2026
         ''')
     
     parser.add_argument(
         'excel_file',
         nargs='?',
-        default='timeoff.xlsx',
-        help='Path to the Excel file (default: timeoff.xlsx)'
+        default='example.xlsx',
+        help='Path to the Excel file (default: example.xlsx)'
     )
     
     parser.add_argument(
