@@ -81,10 +81,19 @@ class TimeOffRequest:
     
     def is_partial_day(self) -> bool:
         """Determine if this is a partial day (hours) or full day request."""
-        return self.days_hours_type == HOURS_INDICATOR or (0 < self.duration < 1)
+        # If duration is in hours and less than a full work day
+        if self.days_hours_type == HOURS_INDICATOR:
+            return self.duration < 24  # Less than 24 hours = partial day
+        # If duration is in days, only partial if less than 1 day
+        return self.duration < 1
     
     def get_num_days(self) -> int:
         """Calculate the number of days for this request."""
+        # If duration is in hours (type is HOURS), convert to days
+        if self.days_hours_type == HOURS_INDICATOR and self.duration >= 1:
+            # Duration is in hours, convert to days
+            return max(1, int(self.duration / 24))
+        # Otherwise duration is already in days
         return int(self.duration) if self.duration >= 1 else 1
     
     def is_in_date_range(self, date_range: Optional[Tuple[datetime, datetime]]) -> bool:
@@ -379,17 +388,26 @@ def clear_calendar(calendar_name: str) -> None:
         return
     
     print(f"Clearing {item_count} events from '{calendar_name}'...")
-    deleted = 0
     
-    while items.Count > 0:
+    # Collect all items first to avoid index shifting issues
+    items_to_delete = []
+    for i in range(1, item_count + 1):
         try:
-            items.Item(1).Delete()
+            items_to_delete.append(items.Item(i))
+        except:
+            pass
+    
+    # Now delete them
+    deleted = 0
+    for item in items_to_delete:
+        try:
+            item.Delete()
             deleted += 1
             if deleted % 50 == 0:
                 print(f"  Deleted {deleted}...")
         except Exception as e:
-            print(f"Error deleting item: {e}")
-            break
+            # Item may have already been deleted or moved
+            pass
     
     print(f"✓ Cleared {deleted} events from calendar\n")
 
@@ -398,18 +416,21 @@ def clear_calendar(calendar_name: str) -> None:
 # EVENT CREATION
 # ============================================================================
 
-def check_duplicate_event(calendar_folder, subject: str, start: datetime, end: datetime) -> bool:
+def check_duplicate_event(calendar_folder, subject: str, start: datetime, end: datetime, is_all_day: bool = False):
     """
-    Check if an event with the same subject, start, and end time already exists.
+    Check if an event with the same subject on the same day already exists.
     
     Args:
         calendar_folder: Calendar folder to search
-        subject: Event subject to match
-        start: Event start datetime to match
-        end: Event end datetime to match
+        subject: Event subject to match (employee name)
+        start: Event start datetime (LOCAL time, not UTC)
+        end: Event end datetime (LOCAL time, not UTC)
+        is_all_day: Whether this is an all-day event
         
     Returns:
-        True if duplicate exists, False otherwise
+        Tuple of (existing_appointment, needs_update)
+        - existing_appointment: The existing appointment object if found, None otherwise
+        - needs_update: True if times are different and need updating, False otherwise
     """
     try:
         items = calendar_folder.Items
@@ -421,23 +442,36 @@ def check_duplicate_event(calendar_folder, subject: str, start: datetime, end: d
         filtered_items = items.Restrict(filter_str)
         
         for item in filtered_items:
-            # Match subject and times (with small tolerance for time comparison)
+            # Match subject (employee name) and date
             if item.Subject == subject:
-                # For all-day events
-                if hasattr(item, 'AllDayEvent') and item.AllDayEvent:
-                    if item.Start.date() == start.date():
-                        return True
-                # For timed events - compare with 1-minute tolerance
-                else:
-                    time_diff_start = abs((item.Start - start).total_seconds())
-                    time_diff_end = abs((item.End - end).total_seconds())
-                    if time_diff_start < 60 and time_diff_end < 60:
-                        return True
+                # Convert COM datetime to Python datetime for proper comparison
+                # item.Start is in local timezone
+                item_start_dt = datetime(item.Start.year, item.Start.month, item.Start.day,
+                                        item.Start.hour, item.Start.minute, item.Start.second)
+                item_end_dt = datetime(item.End.year, item.End.month, item.End.day,
+                                      item.End.hour, item.End.minute, item.End.second)
+                
+                # Check if it's on the same day
+                if item_start_dt.date() == start.date():
+                    # Check if times are different (needs update)
+                    if is_all_day:
+                        # All-day events don't need time comparison
+                        return (item, False)
+                    else:
+                        # For timed events, check if start/end times differ
+                        time_diff_start = abs((item_start_dt - start).total_seconds())
+                        time_diff_end = abs((item_end_dt - end).total_seconds())
+                        if time_diff_start < 60 and time_diff_end < 60:
+                            # Times are the same, no update needed
+                            return (item, False)
+                        else:
+                            # Times are different, needs update
+                            return (item, True)
     except Exception as e:
         # If there's an error checking, proceed with creation (fail-safe)
         pass
     
-    return False
+    return (None, False)
 
 
 def create_event_title(request: TimeOffRequest, config: EventConfig) -> str:
@@ -542,11 +576,13 @@ def create_all_day_event(
         # Check for duplicate
         subject = create_event_title(request, config)
         end_date = current_date + timedelta(days=1)
-        if check_duplicate_event(calendar_folder, subject, current_date, end_date):
+        existing, needs_update = check_duplicate_event(calendar_folder, subject, current_date, end_date, is_all_day=True)
+        
+        if existing and not needs_update:
             print(f"Skipped (duplicate): {request.name} - {current_date.strftime('%m/%d/%Y')} (All Day)")
             return False
         
-        appointment = calendar_folder.Items.Add(OUTLOOK_APPOINTMENT_ITEM)
+        appointment = existing if existing else calendar_folder.Items.Add(OUTLOOK_APPOINTMENT_ITEM)
         appointment.Subject = create_event_title(request, config)
         appointment.Start = current_date
         appointment.End = current_date + timedelta(days=1)
@@ -592,22 +628,37 @@ def create_partial_day_event(
     try:
         # Calculate event times for duplicate check
         start_datetime = datetime.combine(current_date.date(), request.start_time)
-        duration_hours = request.duration * 24
+        
+        # Determine if duration is in hours or days
+        if request.days_hours_type == HOURS_INDICATOR:
+            # Duration is already in hours
+            duration_hours = request.duration
+        else:
+            # Duration is in days, convert to hours
+            duration_hours = request.duration * 24
+        
         end_datetime = start_datetime + timedelta(hours=duration_hours)
+        
+        # Check for duplicate using LOCAL times
+        subject = create_event_title(request, config)
+        existing, needs_update = check_duplicate_event(calendar_folder, subject, start_datetime, end_datetime, is_all_day=False)
+        
+        # Adjust for UTC for Outlook
         start_datetime_utc = adjust_time_for_utc(start_datetime)
         end_datetime_utc = adjust_time_for_utc(end_datetime)
         
-        # Check for duplicate
-        subject = create_event_title(request, config)
-        if check_duplicate_event(calendar_folder, subject, start_datetime_utc, end_datetime_utc):
+        if existing and not needs_update:
             print(f"Skipped (duplicate): {request.name} - {start_datetime.strftime('%m/%d/%Y %I:%M %p')} ({duration_hours:.1f} hrs)")
             return False
-        
-        appointment = calendar_folder.Items.Add(OUTLOOK_APPOINTMENT_ITEM)
+        elif existing and needs_update:
+            print(f"Updating: {request.name} - {start_datetime.strftime('%m/%d/%Y %I:%M %p')} ({duration_hours:.1f} hrs)")
+            appointment = existing
+        else:
+            appointment = calendar_folder.Items.Add(OUTLOOK_APPOINTMENT_ITEM)
         appointment.AllDayEvent = False
+        configure_appointment_base(appointment, request, config, outlook)
         appointment.Start = start_datetime_utc
         appointment.End = end_datetime_utc
-        configure_appointment_base(appointment, request, config, outlook)
         
         if config.include_descriptions:
             appointment.Body = create_event_body(request, duration_hours=duration_hours)
@@ -652,20 +703,27 @@ def create_full_day_event(
         # Calculate event times for duplicate check
         work_start = datetime.combine(current_date.date(), request.start_time)
         work_end = work_start + timedelta(hours=STANDARD_WORK_HOURS)
+        
+        # Check for duplicate using LOCAL times
+        subject = create_event_title(request, config)
+        existing, needs_update = check_duplicate_event(calendar_folder, subject, work_start, work_end, is_all_day=False)
+        
+        # Adjust for UTC for Outlook
         work_start_utc = adjust_time_for_utc(work_start)
         work_end_utc = adjust_time_for_utc(work_end)
         
-        # Check for duplicate
-        subject = create_event_title(request, config)
-        if check_duplicate_event(calendar_folder, subject, work_start_utc, work_end_utc):
+        if existing and not needs_update:
             print(f"Skipped (duplicate): {request.name} - {work_start.strftime('%m/%d/%Y %I:%M %p')}")
             return False
-        
-        appointment = calendar_folder.Items.Add(OUTLOOK_APPOINTMENT_ITEM)
+        elif existing and needs_update:
+            print(f"Updating: {request.name} - {work_start.strftime('%m/%d/%Y %I:%M %p')}")
+            appointment = existing
+        else:
+            appointment = calendar_folder.Items.Add(OUTLOOK_APPOINTMENT_ITEM)
         appointment.AllDayEvent = False
+        configure_appointment_base(appointment, request, config, outlook)
         appointment.Start = work_start_utc
         appointment.End = work_end_utc
-        configure_appointment_base(appointment, request, config, outlook)
         
         if config.include_descriptions:
             appointment.Body = create_event_body(request, day_offset, request.get_num_days())
