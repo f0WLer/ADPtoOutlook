@@ -15,6 +15,13 @@ from typing import Optional, Tuple, List, Dict, Any
 import win32timezone
 import argparse
 import sys
+import os
+try:
+    from icalendar import Calendar, Event as ICalEvent  # type: ignore
+    ICALENDAR_AVAILABLE = True
+except ImportError:
+    ICALENDAR_AVAILABLE = False
+    print("Warning: icalendar library not installed. Install with: pip install icalendar")
 
 
 # ============================================================================
@@ -58,7 +65,9 @@ class TimeOffRequest:
         self.row_index = row_index
         self.name = row.get(EXCEL_COLUMNS['NAME'], 'Unknown')
         self.status = str(row.get(EXCEL_COLUMNS['STATUS'], '')).strip()
-        self.reason = row.get(EXCEL_COLUMNS['REASON'], 'Time Off')
+        # REASON column is optional - use default if missing or None
+        reason_value = row.get(EXCEL_COLUMNS['REASON'])
+        self.reason = reason_value if reason_value else 'Time Off'
         self.policy = row.get(EXCEL_COLUMNS['POLICY'], '')
         self.duration = row.get(EXCEL_COLUMNS['DURATION'], 1)
         self.days_hours_type = str(row.get(EXCEL_COLUMNS['DAYS_HOURS'], '')).strip().upper()
@@ -216,13 +225,42 @@ def load_time_off_requests(excel_file: str) -> List[TimeOffRequest]:
     for cell in sheet[1]:
         headers.append(cell.value)
     
+    # Check which expected columns are present
+    print("\nColumn Detection:")
+    required_cols = ['NAME', 'STATUS', 'DATE']
+    optional_cols = ['REASON', 'POLICY', 'DURATION', 'DAYS_HOURS', 'START_TIME']
+    
+    missing_required = []
+    missing_optional = []
+    
+    for col_key in required_cols:
+        col_name = EXCEL_COLUMNS[col_key]
+        if col_name in headers:
+            print(f"  ✓ Found: {col_name}")
+        else:
+            print(f"  ✗ Missing (REQUIRED): {col_name}")
+            missing_required.append(col_name)
+    
+    for col_key in optional_cols:
+        col_name = EXCEL_COLUMNS[col_key]
+        if col_name in headers:
+            print(f"  ✓ Found: {col_name}")
+        else:
+            print(f"  - Missing (optional): {col_name} (will use defaults)")
+            missing_optional.append(col_name)
+    
+    if missing_required:
+        raise ValueError(f"Required columns missing: {', '.join(missing_required)}")
+    
+    print()
+    
     # Read data rows
     requests = []
     for idx, row in enumerate(sheet.iter_rows(min_row=2, values_only=True)):
         # Convert row to dictionary
         row_dict = {}
         for col_idx, value in enumerate(row):
-            if col_idx < len(headers):
+            if col_idx < len(headers) and headers[col_idx]:
                 row_dict[headers[col_idx]] = value
         
         request = TimeOffRequest(row_dict, idx)
@@ -805,8 +843,188 @@ def create_events_for_request(
 
 
 # ============================================================================
+# ICALENDAR FILE GENERATION
+# ============================================================================
+
+def create_icalendar_event(request: TimeOffRequest, current_date: datetime, day_offset: int, 
+                           config: EventConfig, is_all_day: bool = True, 
+                           duration_hours: Optional[float] = None) -> ICalEvent:
+    """
+    Create an iCalendar event for a time-off request.
+    
+    Args:
+        request: TimeOffRequest object
+        current_date: Date for the event
+        day_offset: Day offset for multi-day events
+        config: EventConfig object
+        is_all_day: Whether this is an all-day event
+        duration_hours: Duration in hours for partial day events
+        
+    Returns:
+        iCalendar Event object
+    """
+    event = ICalEvent()
+    
+    # Set subject/summary
+    event.add('summary', create_event_title(request, config))
+    
+    # Set date/time
+    if is_all_day:
+        event.add('dtstart', current_date.date())
+        event.add('dtend', (current_date + timedelta(days=1)).date())
+    else:
+        if request.start_time:
+            start_datetime = datetime.combine(current_date.date(), request.start_time)
+            if duration_hours:
+                end_datetime = start_datetime + timedelta(hours=duration_hours)
+            else:
+                end_datetime = start_datetime + timedelta(hours=STANDARD_WORK_HOURS)
+            event.add('dtstart', start_datetime)
+            event.add('dtend', end_datetime)
+    
+    # Set description
+    if config.include_descriptions:
+        event.add('description', create_event_body(request, day_offset, request.get_num_days(), duration_hours))
+    
+    # Set other properties
+    event.add('categories', [EVENT_CATEGORY])
+    event.add('transp', 'TRANSPARENT')  # Show as free
+    event.add('status', 'CONFIRMED')
+    
+    # Create unique ID
+    uid = f"{request.name.replace(' ', '_')}_{current_date.strftime('%Y%m%d')}_{day_offset}@timeoff"
+    event.add('uid', uid)
+    
+    # Add timestamp
+    event.add('dtstamp', datetime.now())
+    
+    return event
+
+
+def generate_icalendar_file(
+    requests: List[TimeOffRequest],
+    output_file: str,
+    calendar_name: str,
+    config: EventConfig
+) -> int:
+    """
+    Generate an iCalendar (.ics) file from time-off requests.
+    
+    Args:
+        requests: List of approved TimeOffRequest objects
+        output_file: Path to output .ics file
+        calendar_name: Name for the calendar
+        config: EventConfig object
+        
+    Returns:
+        Number of events created
+    """
+    if not ICALENDAR_AVAILABLE:
+        raise ImportError("icalendar library is required. Install with: pip install icalendar")
+    
+    cal = Calendar()
+    cal.add('prodid', '-//Employee Time Off Calendar//EN')
+    cal.add('version', '2.0')
+    cal.add('x-wr-calname', calendar_name)
+    cal.add('x-wr-timezone', 'America/Chicago')
+    cal.add('calscale', 'GREGORIAN')
+    cal.add('method', 'PUBLISH')
+    
+    events_created = 0
+    
+    for request in requests:
+        if not request.is_valid() or request.start_date is None:
+            continue
+        
+        num_days = request.get_num_days()
+        
+        # All-day events (no start time specified)
+        if request.start_time is None:
+            for day_offset in range(num_days):
+                current_date = request.start_date + timedelta(days=day_offset)
+                event = create_icalendar_event(request, current_date, day_offset, config, is_all_day=True)
+                cal.add_component(event)
+                events_created += 1
+        
+        # Partial day event
+        elif request.is_partial_day():
+            if request.days_hours_type == HOURS_INDICATOR:
+                duration_hours = request.duration
+            else:
+                duration_hours = request.duration * 24
+            
+            event = create_icalendar_event(request, request.start_date, 0, config, 
+                                          is_all_day=False, duration_hours=duration_hours)
+            cal.add_component(event)
+            events_created += 1
+        
+        # Full work day events (may span multiple days)
+        else:
+            for day_offset in range(num_days):
+                current_date = request.start_date + timedelta(days=day_offset)
+                event = create_icalendar_event(request, current_date, day_offset, config, is_all_day=False)
+                cal.add_component(event)
+                events_created += 1
+    
+    # Write to file
+    with open(output_file, 'wb') as f:
+        f.write(cal.to_ical())
+    
+    return events_created
+
+
+# ============================================================================
 # MAIN WORKFLOW
 # ============================================================================
+
+def import_time_off_to_file(
+    excel_file: str,
+    output_file: str,
+    calendar_base_name: str = "Employee Time Off",
+    verbose_titles: bool = False,
+    include_descriptions: bool = True,
+    date_range: Optional[Tuple[datetime, datetime]] = None
+) -> None:
+    """
+    Main function to import time-off requests from Excel to an .ics file.
+    
+    Args:
+        excel_file: Path to the Excel file
+        output_file: Path to output .ics file
+        calendar_base_name: Base name for the calendar
+        verbose_titles: Include reason code in event titles
+        include_descriptions: Include detailed descriptions in event body
+        date_range: Optional tuple of (start_date, end_date) to filter events
+    """
+    # Load and filter requests
+    all_requests = load_time_off_requests(excel_file)
+    approved_requests = filter_requests(all_requests, date_range)
+    
+    # Calculate calendar name
+    earliest, latest = calculate_date_range_from_requests(approved_requests)
+    calendar_name = generate_calendar_name(calendar_base_name, earliest, latest)
+    print(f"Calendar will be named: {calendar_name}")
+    
+    # Create event configuration
+    config = EventConfig(verbose_titles=verbose_titles, include_descriptions=include_descriptions)
+    
+    # Generate .ics file
+    events_created = generate_icalendar_file(approved_requests, output_file, calendar_name, config)
+    events_skipped = len(all_requests) - len(approved_requests)
+    
+    # Summary
+    print(f"\n✓ Complete!")
+    print(f"  Events created: {events_created}")
+    print(f"  Events skipped (not approved/invalid): {events_skipped}")
+    print(f"\nCalendar saved to: {os.path.abspath(output_file)}")
+    print(f"\nTo import into Outlook:")
+    print(f"  1. Open Outlook")
+    print(f"  2. Go to File > Open & Export > Import/Export")
+    print(f"  3. Select 'Import an iCalendar (.ics) or vCalendar file (.vcs)'")
+    print(f"  4. Browse to: {os.path.abspath(output_file)}")
+    print(f"  5. Choose 'Import' to add to your calendar")
+    print(f"\nAlternatively, double-click the .ics file to open it in your default calendar app.")
+
 
 def import_time_off_to_outlook(
     excel_file: str,
@@ -902,17 +1120,18 @@ def handle_clear_operation(excel_file: str, calendar_base_name: str) -> None:
 def parse_arguments():
     """Parse and validate command-line arguments."""
     parser = argparse.ArgumentParser(
-        description='Import employee time-off requests from Excel to Outlook calendar',
+        description='Import employee time-off requests from Excel to calendar file or Outlook',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
   %(prog)s example.xlsx
-  %(prog)s example.xlsx --clear
+  %(prog)s example.xlsx --output my_calendar.ics
+  %(prog)s example.xlsx --outlook
+  %(prog)s example.xlsx --outlook --clear
   %(prog)s example.xlsx --verbose
   %(prog)s example.xlsx --name "Staff Vacation Calendar"
-  %(prog)s example.xlsx --clear --verbose
   %(prog)s example.xlsx --range 02-01-2026 02-14-2026
-  %(prog)s example.xlsx --clear --verbose --range 02-01-2026 02-28-2026 --name "Q1 Time Off"
+  %(prog)s example.xlsx --outlook --clear --verbose --range 02-01-2026 02-28-2026 --name "Q1 Time Off"
         ''')
     
     parser.add_argument(
@@ -923,9 +1142,21 @@ Examples:
     )
     
     parser.add_argument(
+        '--output',
+        type=str,
+        help='Output .ics file path (default: timeoff_calendar.ics)'
+    )
+    
+    parser.add_argument(
+        '--outlook',
+        action='store_true',
+        help='Import directly to Outlook instead of saving to file (legacy mode)'
+    )
+    
+    parser.add_argument(
         '--clear',
         action='store_true',
-        help='Clear existing calendar before importing'
+        help='Clear existing calendar before importing (only works with --outlook)'
     )
     
     parser.add_argument(
@@ -969,15 +1200,40 @@ def main():
     
     # Import time-off requests
     try:
-        import_time_off_to_outlook(
-            excel_file=args.excel_file,
-            calendar_base_name=args.name,
-            verbose_titles=args.verbose,
-            date_range=date_range,
-            clear_existing=args.clear
-        )
+        # Default mode: Save to .ics file
+        if not args.outlook:
+            output_file = args.output if args.output else 'timeoff_calendar.ics'
+            
+            if args.clear:
+                print("Warning: --clear flag only works with --outlook mode\n")
+            
+            import_time_off_to_file(
+                excel_file=args.excel_file,
+                output_file=output_file,
+                calendar_base_name=args.name,
+                verbose_titles=args.verbose,
+                include_descriptions=True,
+                date_range=date_range
+            )
+        # Legacy mode: Import directly to Outlook
+        else:
+            if args.output:
+                print("Warning: --output flag is ignored in --outlook mode\n")
+            
+            import_time_off_to_outlook(
+                excel_file=args.excel_file,
+                calendar_base_name=args.name,
+                verbose_titles=args.verbose,
+                date_range=date_range,
+                clear_existing=args.clear
+            )
     except FileNotFoundError:
         print(f"Error: File '{args.excel_file}' not found.")
+        sys.exit(1)
+    except ImportError as e:
+        print(f"Error: {e}")
+        print("\nTo install required dependencies, run:")
+        print("  pip install icalendar")
         sys.exit(1)
     except Exception as e:
         print(f"Error: {e}")

@@ -88,7 +88,29 @@ echo ================================================================
 echo.
 
 REM Build and run the command
-"%~dp0TimeOffCalendar.exe" "!EXCEL_FILE!" --name "!CALENDAR_NAME!" !CLEAR_FLAG! !DATE_RANGE!
+if "!OUTPUT_MODE!"=="1" (
+    "%~dp0TimeOffCalendar.exe" "!EXCEL_FILE!" --output "!OUTPUT_FILE!" --name "!CALENDAR_NAME!" !DATE_RANGE!
+    
+    if !ERRORLEVEL! EQU 0 (
+        echo.
+        echo ================================================================
+        echo                        Success!
+        echo ================================================================
+        echo.
+        echo Calendar file created: !OUTPUT_FILE!
+        echo.
+        echo To import into Outlook:
+        echo   1. Open Outlook
+        echo   2. Go to File ^> Open ^& Export ^> Import/Export
+        echo   3. Select "Import an iCalendar (.ics) file"
+        echo   4. Browse to: !OUTPUT_FILE!
+        echo   5. Click Import
+        echo.
+        echo Or simply double-click the .ics file to open it!
+    )
+) else (
+    "%~dp0TimeOffCalendar.exe" "!EXCEL_FILE!" --outlook --name "!CALENDAR_NAME!" !CLEAR_FLAG! !DATE_RANGE!
+)
 
 echo.
 echo ================================================================
