@@ -226,7 +226,6 @@ def load_time_off_requests(excel_file: str) -> List[TimeOffRequest]:
         headers.append(cell.value)
     
     # Check which expected columns are present
-    print("\nColumn Detection:")
     required_cols = ['NAME', 'STATUS', 'DATE']
     optional_cols = ['REASON', 'POLICY', 'DURATION', 'DAYS_HOURS', 'START_TIME']
     
@@ -235,24 +234,20 @@ def load_time_off_requests(excel_file: str) -> List[TimeOffRequest]:
     
     for col_key in required_cols:
         col_name = EXCEL_COLUMNS[col_key]
-        if col_name in headers:
-            print(f"  ✓ Found: {col_name}")
-        else:
-            print(f"  ✗ Missing (REQUIRED): {col_name}")
+        if col_name not in headers:
             missing_required.append(col_name)
     
     for col_key in optional_cols:
         col_name = EXCEL_COLUMNS[col_key]
-        if col_name in headers:
-            print(f"  ✓ Found: {col_name}")
-        else:
-            print(f"  - Missing (optional): {col_name} (will use defaults)")
+        if col_name not in headers:
             missing_optional.append(col_name)
     
     if missing_required:
         raise ValueError(f"Required columns missing: {', '.join(missing_required)}")
     
-    print()
+    if missing_optional:
+        print(f"Note: Optional columns missing (will use defaults): {', '.join(missing_optional)}")
+        print()
     
     # Read data rows
     requests = []
